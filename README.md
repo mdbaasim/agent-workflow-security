@@ -138,11 +138,11 @@ FastAPI is included in the planned technology stack but is not yet integrated in
 After the project has been published to GitHub, clone it using its repository URL:
 
 ```bash
-git clone YOUR_REPOSITORY_URL
+git clone https://github.com/mdbaasim/agent-workflow-security.git
 cd agent-workflow-security
 ```
 
-Replace `YOUR_REPOSITORY_URL` with the actual URL of the published repository.
+The command above clones this repository to your local machine.
 
 ### 2. Create a Virtual Environment
 
