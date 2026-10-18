@@ -79,7 +79,39 @@ Uses pytest to test basic policy decisions, correlation behaviour, tool switchin
 
 The test suite is intended to expand as additional threat scenarios and evaluation methods are implemented.
 
+
+
+## Demo: Workflow-Aware Security
+
+The simulator compares independent per-action policy checks with the proposed workflow-aware guard using synthetic events.
+
+### Example Results
+
+| Step | Action | Baseline Policy | Workflow Guard |
+|---|---|---|---|
+| 1 | Request restricted payroll resource | DENIED | DENIED |
+| 2 | Try an alternative route under the same objective | ALLOWED | BLOCKED |
+| 3 | Access unrelated public documents | ALLOWED | ALLOWED |
+
+### Key Observation
+
+The baseline evaluates each action independently, so the alternative route is allowed by the simple resource policy. The workflow-aware guard remembers the earlier denial and blocks the subsequent action associated with the same objective.
+
+The unrelated public-document task remains allowed, demonstrating that the guard does not automatically block every action after a denial.
+
+### Sample Output
+
+```text
+Step 1: baseline=DENIED, workflow_guard=DENIED
+Step 2: baseline=ALLOWED, workflow_guard=BLOCKED
+Step 3: baseline=ALLOWED, workflow_guard=ALLOWED
+
+Alternative-route attempt caught: YES
+```
+
+
 ## Architecture
+
 
 The current prototype is organised into separate modules:
 
