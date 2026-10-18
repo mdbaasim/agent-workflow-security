@@ -2,6 +2,8 @@
 
 **Detecting potential policy evasion across autonomous AI-agent workflows.**
 
+[![Python Tests](https://github.com/mdbaasim/agent-workflow-security/actions/workflows/tests.yml/badge.svg)](https://github.com/mdbaasim/agent-workflow-security/actions/workflows/tests.yml)
+
 An experimental cybersecurity project exploring how to identify and prevent AI agents from pursuing restricted objectives through alternative tools, resources, or delegated agents after an access denial.
 
 Overview:
