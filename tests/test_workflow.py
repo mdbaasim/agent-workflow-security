@@ -1,9 +1,12 @@
 
+import json
+import pytest
+
 from workflow_security.events import ActionEvent
 from workflow_security.policy import evaluate_action
 from workflow_security.correlator import detect_policy_evasion
 from workflow_security.guard import WorkflowGuard
-
+from workflow_security.simulator import load_scenario
 
 def make_event(
     resource: str,
@@ -180,3 +183,73 @@ def test_workflow_guard_allows_unrelated_objective():
     )
 
     assert guard.evaluate(unrelated).status == "allowed"
+
+
+def test_load_scenario_from_json(tmp_path):
+    scenario = {
+        "restricted_resources": ["payroll_records"],
+        "events": [
+            {
+                "step": 1,
+                "task_id": "test-load-1",
+                "objective_id": "export-payroll",
+                "agent_id": "agent-main",
+                "tool": "file_reader",
+                "action": "read",
+                "resource": "payroll.csv",
+                "canonical_resource": "payroll_records",
+                "status": "requested",
+            }
+        ],
+    }
+
+    path = tmp_path / "scenario.json"
+    path.write_text(json.dumps(scenario), encoding="utf-8")
+
+    restricted_resources, events = load_scenario(path)
+
+    assert restricted_resources == {"payroll_records"}
+    assert len(events) == 1
+    assert events[0].task_id == "test-load-1"
+
+
+def test_load_scenario_rejects_empty_events(tmp_path):
+    scenario = {
+        "restricted_resources": ["payroll_records"],
+        "events": [],
+    }
+
+    path = tmp_path / "empty.json"
+    path.write_text(json.dumps(scenario), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="at least one event"):
+        load_scenario(path)
+
+
+def test_load_scenario_rejects_different_task_ids(tmp_path):
+    event = {
+        "step": 1,
+        "task_id": "task-1",
+        "objective_id": "export-payroll",
+        "agent_id": "agent-main",
+        "tool": "file_reader",
+        "action": "read",
+        "resource": "payroll.csv",
+        "canonical_resource": "payroll_records",
+        "status": "requested",
+    }
+
+    second_event = event.copy()
+    second_event["step"] = 2
+    second_event["task_id"] = "task-2"
+
+    scenario = {
+        "restricted_resources": ["payroll_records"],
+        "events": [event, second_event],
+    }
+
+    path = tmp_path / "different_tasks.json"
+    path.write_text(json.dumps(scenario), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="share one task_id"):
+        load_scenario(path)
