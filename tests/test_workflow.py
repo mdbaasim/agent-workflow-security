@@ -2,6 +2,8 @@
 import json
 import pytest
 
+from unittest.mock import MagicMock, patch
+from workflow_security.ai_analyzer import analyze_workflow
 from workflow_security.events import ActionEvent
 from workflow_security.policy import evaluate_action
 from workflow_security.correlator import detect_policy_evasion
@@ -253,3 +255,61 @@ def test_load_scenario_rejects_different_task_ids(tmp_path):
 
     with pytest.raises(ValueError, match="share one task_id"):
         load_scenario(path)
+
+def test_ai_analyzer_uses_mocked_ollama_response():
+    event = make_event(
+        "payroll_records",
+        canonical_resource="payroll_records",
+        objective_id="export-payroll",
+    )
+
+    baseline = evaluate_action(
+        event,
+        restricted_resources={"payroll_records"},
+    )
+
+    guard = WorkflowGuard(
+        restricted_resources={"payroll_records"}
+    )
+    guarded = guard.evaluate(event)
+
+    fake_response = MagicMock()
+    fake_response.__enter__.return_value.read.return_value = (
+        json.dumps(
+            {"message": {"content": "Findings: local analysis"}}
+        ).encode("utf-8")
+    )
+
+    with patch(
+        "workflow_security.ai_analyzer.urlopen",
+        return_value=fake_response,
+    ) as mocked_urlopen:
+        result = analyze_workflow(
+            [event],
+            [baseline],
+            [guarded],
+        )
+
+    assert result == "Findings: local analysis"
+    mocked_urlopen.assert_called_once()
+
+    request = mocked_urlopen.call_args.args[0]
+    payload = json.loads(request.data.decode("utf-8"))
+
+    assert payload["model"] == "qwen3:latest"
+    assert "baseline_decision" in payload["messages"][1]["content"]
+
+
+def test_ai_analyzer_rejects_empty_events():
+    with pytest.raises(ValueError, match="At least one workflow event"):
+        analyze_workflow([], [], [])
+
+
+def test_ai_analyzer_rejects_mismatched_decisions():
+    event = make_event("public_docs")
+
+    with pytest.raises(ValueError, match="baseline decision"):
+        analyze_workflow([event], [], [])
+
+    with pytest.raises(ValueError, match="workflow-guard decision"):
+        analyze_workflow([event], [object()], [])
