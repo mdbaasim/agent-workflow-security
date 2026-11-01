@@ -11,6 +11,7 @@ __pycache__/
 build/
 dist/
 *.db
+clean_prototype_frames/
 proto_shots/
 proto_slides/
 temp_slides/
