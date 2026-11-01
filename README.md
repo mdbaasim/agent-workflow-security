@@ -1,6 +1,8 @@
 IntentFence: AI Agent Workflow Security Copilot
 Meta Global AI Developer Hackathon 2026
 
+Live Cloud Demo: https://agent-workflow-security.vercel.app
+
 IntentFence is a denial-aware cybersecurity copilot designed to detect and block autonomous AI agents from evading access restrictions by switching tools, views, or delegating tasks after a sensitive operation is denied.
 
 ============================================================
