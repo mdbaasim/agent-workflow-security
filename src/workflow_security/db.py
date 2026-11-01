@@ -1,12 +1,16 @@
 """SQLite audit persistence for IntentFence security events and decisions."""
 
+import os
 import sqlite3
 from pathlib import Path
 from typing import Any
 
-DEFAULT_DB_PATH = (
-    Path(__file__).resolve().parents[2] / "data" / "intentfence.db"
-)
+if os.environ.get("VERCEL"):
+    DEFAULT_DB_PATH = Path("/tmp/intentfence.db")
+else:
+    DEFAULT_DB_PATH = (
+        Path(__file__).resolve().parents[2] / "data" / "intentfence.db"
+    )
 
 
 def get_connection(db_path: Path | str | None = None) -> sqlite3.Connection:
