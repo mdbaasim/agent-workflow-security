@@ -11,3 +11,8 @@ __pycache__/
 build/
 dist/
 *.db
+proto_shots/
+proto_slides/
+temp_slides/
+test_chrome.png
+
