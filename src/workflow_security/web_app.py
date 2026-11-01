@@ -1,19 +1,22 @@
 """IntentFence Web Application: Real-Time AI Agent Workflow Security Copilot.
 
 Includes stateful event ingestion, Server-Sent Events (SSE) live streaming,
-scenario playback controls, SQLite audit history, and Meta Llama 3.2 local AI analysis.
+scenario playback controls, SQLite audit history, interactive developer sandbox,
+and Meta Llama 3.2 local AI analysis.
 """
 
 import asyncio
+import csv
+from datetime import datetime, timezone
+import io
 import json
 import logging
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .ai_analyzer import DEFAULT_MODEL, analyze_workflow, get_available_local_models
@@ -53,60 +56,65 @@ class AIAnalysisRequest(BaseModel):
     run_id: str | None = None
 
 
+class SandboxActionRequest(BaseModel):
+    objective_id: str = "export-payroll"
+    agent_id: str = "bot-alpha"
+    tool: str = "sql_query"
+    action: str = "read"
+    resource: str = "payroll_view"
+    canonical_resource: str | None = None
+    task_id: str = "interactive-sandbox"
+
+
 class EngineState:
     """Stateful engine preserving active guard memory and broadcasting events in real time."""
 
     def __init__(self) -> None:
         init_db()
-        self.restricted_resources: set[str] = {"payroll_records"}
+        self.restricted_resources = {"payroll_records"}
         self.guard = WorkflowGuard(self.restricted_resources)
         self.active_run_id = f"run-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
-        self.active_scenario_name = "alternative_route.json"
+        self.active_scenario_name = DEFAULT_SCENARIO_PATH.name
+        self.is_running_demo = False
         self.listeners: set[asyncio.Queue] = set()
         self.demo_task: asyncio.Task | None = None
-        self.is_running_demo: bool = False
         self.lock = asyncio.Lock()
 
-    def reset_guard(self, restricted_resources: set[str] | None = None, scenario_name: str = "custom") -> str:
-        if restricted_resources is not None:
-            self.restricted_resources = set(restricted_resources)
+    def reset_guard(self, restricted: set[str] | None = None) -> str:
+        """Reset internal guard memory and generate a fresh run identifier."""
+        if restricted is not None:
+            self.restricted_resources = set(restricted)
         self.guard = WorkflowGuard(self.restricted_resources)
+        now_iso = datetime.now(timezone.utc).isoformat()
         self.active_run_id = f"run-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
-        self.active_scenario_name = scenario_name
-        record_run(self.active_run_id, self.active_scenario_name, datetime.now(timezone.utc).isoformat())
+        record_run(self.active_run_id, self.active_scenario_name, now_iso)
         return self.active_run_id
 
-    async def broadcast(self, message_type: str, data: Any) -> None:
-        """Push real-time payload to all active SSE listener queues."""
-        if not self.listeners:
-            return
-        payload = json.dumps({"type": message_type, "data": data})
-        closed_listeners = set()
-        for queue in self.listeners:
+    async def broadcast(self, event_type: str, data: dict[str, Any]) -> None:
+        """Deliver a structured telemetry message to all connected SSE clients."""
+        payload = f"event: message\ndata: {json.dumps({'type': event_type, 'data': data})}\n\n"
+        dead_queues = set()
+        for q in list(self.listeners):
             try:
-                queue.put_nowait(payload)
+                q.put_nowait(payload)
             except asyncio.QueueFull:
-                closed_listeners.add(queue)
-            except Exception:
-                closed_listeners.add(queue)
-        self.listeners.difference_update(closed_listeners)
+                dead_queues.add(q)
+        self.listeners.difference_update(dead_queues)
 
-    def evaluate_and_record(self, event: ActionEvent, run_id: str | None = None) -> dict[str, Any]:
-        target_run_id = run_id or self.active_run_id
-
+    def evaluate_and_record(self, event: ActionEvent) -> dict[str, Any]:
+        """Evaluate an individual event, apply guard logic, and commit to SQLite."""
         baseline = evaluate_action(event, self.restricted_resources)
         guarded = self.guard.evaluate(event)
 
+        severity = "info"
         if guarded.status == "blocked":
             severity = "critical"
-        elif baseline.status == "denied":
-            severity = "high"
-        else:
-            severity = "info"
+        elif guarded.status == "denied":
+            severity = "warning"
 
         now_iso = datetime.now(timezone.utc).isoformat()
         record_dict = {
-            "run_id": target_run_id,
+            "run_id": self.active_run_id,
             "step": event.step,
             "task_id": event.task_id,
             "objective_id": event.objective_id,
@@ -219,6 +227,78 @@ async def ingest_events(payload: ActionEvent | EventIngestBatch):
     }
 
 
+@app.post("/api/events/test")
+async def evaluate_custom_action(payload: SandboxActionRequest):
+    """Evaluate a custom user-defined action through the stateful guard and policy engine."""
+    canonical = payload.canonical_resource or payload.resource
+    existing_events = get_recent_events(run_id=engine.active_run_id, limit=500)
+    step_num = len(existing_events) + 1
+
+    event = ActionEvent(
+        step=step_num,
+        task_id=payload.task_id,
+        objective_id=payload.objective_id,
+        agent_id=payload.agent_id,
+        tool=payload.tool,
+        action=payload.action,
+        resource=payload.resource,
+        canonical_resource=canonical,
+        status="requested",
+    )
+    async with engine.lock:
+        eval_record = engine.evaluate_and_record(event)
+        await engine.broadcast("event_evaluated", eval_record)
+        metrics = get_metrics(run_id=engine.active_run_id)
+        await engine.broadcast("metrics_updated", metrics)
+
+    return {
+        "record": eval_record,
+        "metrics": metrics,
+        "is_evasion": eval_record["baseline_status"] == "allowed" and eval_record["guard_status"] == "blocked",
+    }
+
+
+@app.get("/api/export/audit")
+async def export_audit(format: str = "json", run_id: str | None = None):
+    """Export persisted SQLite audit trail as downloadable JSON or CSV."""
+    events = get_recent_events(run_id=run_id, limit=1000)
+    if not events and run_id:
+        events = get_recent_events(limit=1000)
+
+    timestamp_str = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+
+    if format.lower() == "csv":
+        output = io.StringIO()
+        fieldnames = [
+            "id", "run_id", "step", "task_id", "objective_id", "agent_id",
+            "parent_agent_id", "tool", "action", "resource", "canonical_resource",
+            "baseline_status", "baseline_reason", "guard_status", "guard_reason",
+            "severity", "created_at"
+        ]
+        writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        for ev in events:
+            writer.writerow(ev)
+
+        csv_content = output.getvalue()
+        return Response(
+            content=csv_content,
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": f'attachment; filename="intentfence_audit_{timestamp_str}.csv"'
+            }
+        )
+    else:
+        json_content = json.dumps(events, indent=2)
+        return Response(
+            content=json_content,
+            media_type="application/json",
+            headers={
+                "Content-Disposition": f'attachment; filename="intentfence_audit_{timestamp_str}.json"'
+            }
+        )
+
+
 @app.get("/api/evaluate")
 async def evaluate_static_legacy():
     """Backward compatibility endpoint for static evaluation."""
@@ -260,35 +340,36 @@ async def event_stream(request: Request):
     queue: asyncio.Queue = asyncio.Queue(maxsize=100)
     engine.listeners.add(queue)
 
-    async def event_generator():
+    async def sse_generator():
         try:
-            metrics = get_metrics(run_id=engine.active_run_id)
-            initial_payload = json.dumps({
+            init_payload = {
                 "type": "connected",
                 "data": {
-                    "active_run_id": engine.active_run_id,
-                    "active_scenario": engine.active_scenario_name,
-                    "metrics": metrics,
+                    "run_id": engine.active_run_id,
+                    "scenario": engine.active_scenario_name,
+                    "metrics": get_metrics(run_id=engine.active_run_id),
                 },
-            })
-            yield f"data: {initial_payload}\n\n"
+            }
+            yield f"event: message\ndata: {json.dumps(init_payload)}\n\n"
 
             while True:
                 if await request.is_disconnected():
                     break
                 try:
-                    payload = await asyncio.wait_for(queue.get(), timeout=15.0)
-                    yield f"data: {payload}\n\n"
+                    msg = await asyncio.wait_for(queue.get(), timeout=20.0)
+                    yield msg
                 except asyncio.TimeoutError:
-                    yield ": heartbeat\n\n"
+                    yield ": ping\n\n"
+        except asyncio.CancelledError:
+            pass
         finally:
             engine.listeners.discard(queue)
 
     return StreamingResponse(
-        event_generator(),
+        sse_generator(),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-cache, no-transform",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
         },
@@ -296,54 +377,50 @@ async def event_stream(request: Request):
 
 
 @app.post("/api/demo/run/{scenario_id}")
-async def run_scenario_demo(scenario_id: str, speed_ms: int = 1000):
-    """Trigger background controlled replay of a scenario with live streaming."""
+async def run_scenario_demo(scenario_id: str):
+    """Run an automated scenario in the background, streaming events as they execute."""
     target_path = SCENARIOS_DIR / scenario_id
     if not target_path.exists():
-        target_path = SCENARIOS_DIR / f"{scenario_id}.json"
-    if not target_path.exists():
-        raise HTTPException(status_code=404, detail=f"Scenario '{scenario_id}' not found.")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Scenario '{scenario_id}' not found in {SCENARIOS_DIR}",
+        )
 
-    try:
-        restricted, events = load_scenario(target_path)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid scenario file: {e}")
+    restricted_resources, events = load_scenario(target_path)
 
-    if engine.is_running_demo and engine.demo_task and not engine.demo_task.done():
-        engine.demo_task.cancel()
+    async with engine.lock:
+        if engine.demo_task and not engine.demo_task.done():
+            engine.demo_task.cancel()
 
-    run_id = engine.reset_guard(restricted_resources=restricted, scenario_name=target_path.name)
+        engine.active_scenario_name = scenario_id
+        run_id = engine.reset_guard(restricted_resources)
+        engine.is_running_demo = True
+
     await engine.broadcast("demo_started", {
         "run_id": run_id,
-        "scenario_name": target_path.name,
-        "total_steps": len(events),
-        "restricted_resources": list(restricted),
+        "scenario": scenario_id,
+        "total_events": len(events),
+        "restricted_resources": list(restricted_resources),
     })
 
     async def demo_worker():
-        engine.is_running_demo = True
         try:
-            delay_sec = max(0.1, speed_ms / 1000.0)
             for event in events:
-                await asyncio.sleep(delay_sec)
+                await asyncio.sleep(0.4)
                 async with engine.lock:
-                    eval_record = engine.evaluate_and_record(event, run_id=run_id)
-                    await engine.broadcast("event_evaluated", eval_record)
-                    metrics = get_metrics(run_id=run_id)
-                    await engine.broadcast("metrics_updated", metrics)
+                    eval_record = engine.evaluate_and_record(event)
+                await engine.broadcast("event_evaluated", eval_record)
+                metrics = get_metrics(run_id=run_id)
+                await engine.broadcast("metrics_updated", metrics)
 
-            await asyncio.sleep(0.3)
             alerts = detect_policy_evasion(events)
             alert_dicts = [
                 {
-                    "task_id": a.task_id,
-                    "denied_step": a.denied_step,
-                    "attempt_step": a.attempt_step,
+                    "step": a.step,
+                    "alert_type": a.alert_type,
+                    "agent_id": a.agent_id,
+                    "tool": a.tool,
                     "canonical_resource": a.canonical_resource,
-                    "original_agent": a.original_agent,
-                    "attempting_agent": a.attempting_agent,
-                    "original_tool": a.original_tool,
-                    "attempting_tool": a.attempting_tool,
                     "reason": a.reason,
                 }
                 for a in alerts
@@ -521,7 +598,7 @@ html, body {
   gap: 22px;
 }
 
-/* Top Header Bar with Brand on Left, Center Pills, and System Status on Right */
+/* Top Header Bar */
 .main-header {
   position: relative;
   display: flex;
@@ -547,6 +624,9 @@ html, body {
   font-weight: 800;
   font-size: 14px;
   letter-spacing: -0.5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .brand-text-group {
@@ -595,13 +675,21 @@ html, body {
   color: var(--text-muted);
   border: none;
   border-radius: 24px;
-  padding: 8px 22px;
+  padding: 8px 18px;
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   outline: none;
   white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.nav-pill-btn svg {
+  flex-shrink: 0;
+  stroke: currentColor;
 }
 
 .nav-pill-btn:hover {
@@ -703,7 +791,7 @@ html, body {
   }
 }
 
-/* Left Column: Pastel Task Cards */
+/* Left Column */
 .scenario-column {
   display: flex;
   flex-direction: column;
@@ -828,6 +916,9 @@ html, body {
   cursor: pointer;
   box-shadow: 0 4px 14px rgba(15, 23, 42, 0.12);
   transition: all 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .btn-black:hover:not(:disabled) {
@@ -845,6 +936,9 @@ html, body {
   font-weight: 600;
   cursor: pointer;
   transition: all 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .btn-ghost:hover:not(:disabled) {
@@ -1040,13 +1134,16 @@ tr:last-child td {
 </head>
 <body>
 
-<!-- Main App - Pure Full-Width Layout, Zero Sidebars -->
+<!-- Main App Surface -->
 <main class="app-main">
 
   <!-- Header with Brand on Left, Center Pills, System Status on Right -->
   <header class="main-header">
     <div class="header-left">
-      <div class="brand-badge">IF</div>
+      <div class="brand-badge">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
+        <span>IntentFence</span>
+      </div>
       <div class="brand-text-group">
         <h1 class="page-title" id="pageTitle">Dashboard</h1>
         <p class="page-subtext" id="pageSubtitle">Real-Time Autonomous Agent Workflow Security Copilot</p>
@@ -1057,16 +1154,20 @@ tr:last-child td {
     <div class="center-nav-container">
       <nav class="top-nav-pills">
         <button class="nav-pill-btn active" id="topPill-dashboard" onclick="switchSection('dashboard')">
-          Dashboard
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
+          <span>Dashboard</span>
         </button>
         <button class="nav-pill-btn" id="topPill-developer" onclick="switchSection('developer')">
-          Developer
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>
+          <span>Developer Sandbox</span>
         </button>
         <button class="nav-pill-btn" id="topPill-protection" onclick="switchSection('protection')">
-          Protection
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
+          <span>Protection</span>
         </button>
         <button class="nav-pill-btn" id="topPill-audit" onclick="switchSection('audit')">
-          Audit
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg>
+          <span>Audit & Export</span>
         </button>
       </nav>
     </div>
@@ -1161,7 +1262,10 @@ tr:last-child td {
         <div class="white-box">
           <div class="action-row">
             <div class="action-btn-group">
-              <button id="runBtn" class="btn-black" onclick="startScenarioDemo()">Execute Live Simulation</button>
+              <button id="runBtn" class="btn-black" onclick="startScenarioDemo()">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                <span>Execute Live Simulation</span>
+              </button>
               <button id="stopBtn" class="btn-ghost" onclick="stopDemo()" disabled>Stop</button>
               <button id="resetBtn" class="btn-ghost" onclick="resetDemo()">Reset State</button>
             </div>
@@ -1171,7 +1275,10 @@ tr:last-child td {
                 <option value="llama3.2:3b">Meta Llama 3.2 (3B)</option>
                 <option value="qwen3:latest">Qwen 3 (Latest)</option>
               </select>
-              <button id="aiBtn" class="btn-black" onclick="requestAIAnalysis()">Generate Report</button>
+              <button id="aiBtn" class="btn-black" onclick="requestAIAnalysis()">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+                <span>Generate Report</span>
+              </button>
             </div>
           </div>
         </div>
@@ -1213,7 +1320,7 @@ tr:last-child td {
         <div class="white-box">
           <div class="card-header-row">
             <span class="card-title">Local Security Analyst Report</span>
-            <span class="card-subtitle">Zero Cloud Transmission</span>
+            <span class="card-subtitle">Zero Cloud Transmission (Local Meta Llama 3.2)</span>
           </div>
           <pre class="ai-report-box" id="aiReportBox">Select "Generate Report" to request an analytical breakdown from the local open-weight model.</pre>
         </div>
@@ -1224,34 +1331,116 @@ tr:last-child td {
 
   </div>
 
-  <!-- SECTION 2: DEVELOPER ADAPTER -->
+  <!-- SECTION 2: DEVELOPER SANDBOX (INTERACTIVE TESTER) -->
   <div class="tab-view" id="view-developer">
-    <div class="white-box">
-      <div class="card-header-row">
-        <span class="card-title">Developer Integration Adapter</span>
-        <span class="card-subtitle">Pre-Execution Tool Proxy</span>
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px;">
+
+      <!-- Sandbox Interactive Form (Left Column) -->
+      <div class="white-box">
+        <div class="card-header-row">
+          <div>
+            <span class="card-title">Interactive Security Sandbox</span>
+            <div class="card-subtitle">Live Action Interception Tester for Evaluators</div>
+          </div>
+          <span class="brand-badge" style="background-color: #2563eb; font-size: 11px;">TEST ENGINE</span>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 14px;">
+          <div>
+            <label style="font-size: 11px; font-weight: 700; color: var(--text-dim); text-transform: uppercase;">Objective ID</label>
+            <input type="text" id="sandboxObjective" class="scenario-select-box" style="margin-top: 4px;" value="export-payroll" />
+          </div>
+
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+            <div>
+              <label style="font-size: 11px; font-weight: 700; color: var(--text-dim); text-transform: uppercase;">Agent ID</label>
+              <input type="text" id="sandboxAgent" class="scenario-select-box" style="margin-top: 4px;" value="bot-alpha" />
+            </div>
+            <div>
+              <label style="font-size: 11px; font-weight: 700; color: var(--text-dim); text-transform: uppercase;">Tool Name</label>
+              <input type="text" id="sandboxTool" class="scenario-select-box" style="margin-top: 4px;" value="sql_query" />
+            </div>
+          </div>
+
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+            <div>
+              <label style="font-size: 11px; font-weight: 700; color: var(--text-dim); text-transform: uppercase;">Target Resource</label>
+              <input type="text" id="sandboxResource" class="scenario-select-box" style="margin-top: 4px;" value="payroll_view" />
+            </div>
+            <div>
+              <label style="font-size: 11px; font-weight: 700; color: var(--text-dim); text-transform: uppercase;">Canonical Entity</label>
+              <input type="text" id="sandboxCanonical" class="scenario-select-box" style="margin-top: 4px;" value="payroll_records" />
+            </div>
+          </div>
+
+          <div>
+            <label style="font-size: 11px; font-weight: 700; color: var(--text-dim); text-transform: uppercase;">Quick Fill Presets</label>
+            <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px;">
+              <button type="button" class="btn-ghost" style="padding: 6px 12px; font-size: 11px;" onclick="fillSandboxPreset('denied')">Preset 1: Initial Denial</button>
+              <button type="button" class="btn-ghost" style="padding: 6px 12px; font-size: 11px;" onclick="fillSandboxPreset('blocked')">Preset 2: Tool Switch Evasion</button>
+              <button type="button" class="btn-ghost" style="padding: 6px 12px; font-size: 11px;" onclick="fillSandboxPreset('allowed')">Preset 3: Legitimate Work</button>
+            </div>
+          </div>
+
+          <div style="margin-top: 6px;">
+            <button id="sandboxTestBtn" class="btn-black" style="width: 100%; padding: 12px;" onclick="executeSandboxTest()">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+              <span>Test Action Interception</span>
+            </button>
+          </div>
+        </div>
       </div>
-      <p style="font-size: 13px; color: var(--text-muted); line-height: 1.5;">
-        The GuardedToolProxy acts as an interception boundary wrapping agent tool execution. Any action targeting a restricted or previously denied objective is neutralized before reaching underlying resources.
-      </p>
-      <div class="code-container">
-from workflow_security.agent_adapter import GuardedToolProxy, MockAgentEnvironment
+
+      <!-- Real-Time Verdict Card (Right Column) -->
+      <div style="display: flex; flex-direction: column; gap: 16px;">
+        <div class="white-box" id="verdictBox" style="border-left: 4px solid #f59e0b;">
+          <div class="card-header-row">
+            <div>
+              <span class="card-title">Real-Time Interception Verdict</span>
+              <div class="card-subtitle">Stateful Pre-Execution Outcome</div>
+            </div>
+            <span id="verdictBadge" class="status-tag tag-blocked" style="font-size: 12px; padding: 6px 12px;">READY</span>
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 12px; margin-top: 8px;">
+            <div style="background-color: #f8fafc; border-radius: 10px; padding: 14px; border: 1px solid var(--border-subtle);">
+              <div style="font-size: 11px; font-weight: 700; color: var(--text-dim); text-transform: uppercase;">Verdict Summary</div>
+              <div id="verdictTitle" style="font-size: 15px; font-weight: 800; color: var(--text-main); margin-top: 2px;">Awaiting Execution</div>
+              <p id="verdictDetail" style="font-size: 12px; color: var(--text-muted); margin-top: 6px; line-height: 1.5;">Click "Test Action Interception" to submit this custom action to the IntentFence workflow guard.</p>
+            </div>
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+              <div style="background-color: #f8fafc; border-radius: 8px; padding: 10px; border: 1px solid var(--border-subtle);">
+                <span style="font-size: 10px; font-weight: 700; color: var(--text-dim); text-transform: uppercase;">Baseline Policy</span>
+                <div id="verdictBaseline" style="font-size: 13px; font-weight: 700; color: var(--text-main); margin-top: 2px;">--</div>
+              </div>
+              <div style="background-color: #f8fafc; border-radius: 8px; padding: 10px; border: 1px solid var(--border-subtle);">
+                <span style="font-size: 10px; font-weight: 700; color: var(--text-dim); text-transform: uppercase;">IntentFence Guard</span>
+                <div id="verdictGuard" style="font-size: 13px; font-weight: 700; color: var(--text-main); margin-top: 2px;">--</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Python Code Integration Snippet -->
+        <div class="white-box">
+          <div class="card-header-row">
+            <span class="card-title">Runtime Python Adapter</span>
+            <span class="card-subtitle">GuardedToolProxy Boundary</span>
+          </div>
+          <div class="code-container" style="max-height: 180px;">
+from workflow_security.agent_adapter import GuardedToolProxy
 from workflow_security.guard import WorkflowGuard
 
-# Initialize guard with restricted policies
 guard = WorkflowGuard(restricted_resources={"payroll_records"})
 proxy = GuardedToolProxy(guard)
 
-# Intercept and validate agent tool call before execution
-try:
-    result = proxy.execute_guarded(
-        event,
-        MockAgentEnvironment.mock_file_reader,
-        "payroll.csv"
-    )
-except SecurityEnforcementError as exc:
-    print(f"Action blocked by IntentFence: {exc.reason}")
+# Pre-execution tool call interception
+result = proxy.execute_guarded(event, my_tool_callable, **kwargs)
+          </div>
+        </div>
       </div>
+
     </div>
   </div>
 
@@ -1275,18 +1464,48 @@ except SecurityEnforcementError as exc:
     </div>
   </div>
 
-  <!-- SECTION 4: AUDIT -->
+  <!-- SECTION 4: AUDIT & EXPORT -->
   <div class="tab-view" id="view-audit">
     <div class="white-box">
-      <div class="card-header-row">
-        <span class="card-title">Audit Log & Compliance Subsystem</span>
-        <span class="card-subtitle">SQLite Persistence</span>
+      <div class="card-header-row" style="flex-wrap: wrap; gap: 12px;">
+        <div>
+          <span class="card-title">Audit Log & Compliance Subsystem</span>
+          <span class="card-subtitle">SQLite Persistent Records (data/intentfence.db)</span>
+        </div>
+        <div class="action-btn-group">
+          <button class="btn-black" onclick="exportAudit('json')">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+            <span>Export Telemetry (JSON)</span>
+          </button>
+          <button class="btn-ghost" onclick="exportAudit('csv')">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+            <span>Export Telemetry (CSV)</span>
+          </button>
+          <button class="btn-ghost" onclick="loadAuditTable()">
+            Refresh Audit
+          </button>
+        </div>
       </div>
-      <ul class="bullet-group">
-        <li>Database target: `data/intentfence.db`</li>
-        <li>Schema includes run identifiers, timestamps, raw status, evaluated decisions, and severity tags.</li>
-        <li>Full support for replay verification and zero-retention reset routines.</li>
-      </ul>
+
+      <!-- Audit Records Table -->
+      <div style="overflow-x: auto; margin-top: 8px;">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Run ID</th>
+              <th>Objective</th>
+              <th>Agent & Tool</th>
+              <th>Resource</th>
+              <th>Baseline</th>
+              <th>IntentFence Guard</th>
+            </tr>
+          </thead>
+          <tbody id="auditTableBody">
+            <tr><td colspan="7" style="text-align: center; color: var(--text-dim); padding: 24px;">Loading persisted audit records...</td></tr>
+          </tbody>
+        </table>
+      </div>
     </div>
   </div>
 
@@ -1301,15 +1520,15 @@ function switchSection(sectionId) {
   const sections = ["dashboard", "developer", "protection", "audit"];
   const titles = {
     dashboard: "Dashboard",
-    developer: "Developer Adapter",
+    developer: "Developer Sandbox",
     protection: "Policy Protection",
-    audit: "Audit Log & Records"
+    audit: "Audit Log & Telemetry"
   };
   const subtitles = {
     dashboard: "Real-Time Autonomous Agent Workflow Security Copilot",
-    developer: "Pre-Execution Tool Proxy & Boundary Interception",
+    developer: "Interactive Pre-Execution Action Interception Tester",
     protection: "Two-Tier Objective Defense & Canonical Policies",
-    audit: "SQLite Audit Persistence & Regulatory Replay"
+    audit: "SQLite Audit Persistence & Regulatory Export"
   };
 
   sections.forEach(s => {
@@ -1326,6 +1545,10 @@ function switchSection(sectionId) {
 
   byId("pageTitle").textContent = titles[sectionId] || "Dashboard";
   byId("pageSubtitle").textContent = subtitles[sectionId] || "";
+
+  if (sectionId === "audit") {
+    loadAuditTable();
+  }
 }
 
 function initSSE() {
@@ -1505,6 +1728,125 @@ async function requestAIAnalysis() {
     aiBtn.disabled = false;
     aiBtn.textContent = "Generate Report";
   }
+}
+
+/* Developer Sandbox Functions */
+function fillSandboxPreset(presetType) {
+  if (presetType === "denied") {
+    byId("sandboxObjective").value = "export-payroll";
+    byId("sandboxAgent").value = "bot-alpha";
+    byId("sandboxTool").value = "file_reader";
+    byId("sandboxResource").value = "payroll.csv";
+    byId("sandboxCanonical").value = "payroll_records";
+  } else if (presetType === "blocked") {
+    byId("sandboxObjective").value = "export-payroll";
+    byId("sandboxAgent").value = "bot-alpha";
+    byId("sandboxTool").value = "sql_query";
+    byId("sandboxResource").value = "payroll_view";
+    byId("sandboxCanonical").value = "payroll_view";
+  } else if (presetType === "allowed") {
+    byId("sandboxObjective").value = "read-handbook";
+    byId("sandboxAgent").value = "bot-alpha";
+    byId("sandboxTool").value = "web_fetcher";
+    byId("sandboxResource").value = "https://docs.local/help.html";
+    byId("sandboxCanonical").value = "public_help";
+  }
+}
+
+async function executeSandboxTest() {
+  const btn = byId("sandboxTestBtn");
+  btn.disabled = true;
+
+  const payload = {
+    objective_id: byId("sandboxObjective").value.trim(),
+    agent_id: byId("sandboxAgent").value.trim(),
+    tool: byId("sandboxTool").value.trim(),
+    action: "read",
+    resource: byId("sandboxResource").value.trim(),
+    canonical_resource: byId("sandboxCanonical").value.trim(),
+    task_id: "interactive-sandbox"
+  };
+
+  try {
+    const res = await fetch("/api/events/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Test failed");
+
+    const record = data.record;
+    const badge = byId("verdictBadge");
+    const box = byId("verdictBox");
+    const title = byId("verdictTitle");
+    const detail = byId("verdictDetail");
+
+    byId("verdictBaseline").textContent = record.baseline_status.toUpperCase() + (record.baseline_reason ? ` (${record.baseline_reason})` : "");
+    byId("verdictGuard").textContent = record.guard_status.toUpperCase() + (record.guard_reason ? ` (${record.guard_reason})` : "");
+
+    if (record.guard_status === "blocked") {
+      badge.className = "status-tag tag-blocked";
+      badge.textContent = "BLOCKED";
+      box.style.borderLeftColor = "#f59e0b";
+      title.textContent = "Bypass Evasion Neutralized";
+      detail.textContent = `Action blocked pre-execution. Objective "${record.objective_id}" encountered previous denial. IntentFence prevented alternate tool execution.`;
+    } else if (record.guard_status === "denied") {
+      badge.className = "status-tag tag-denied";
+      badge.textContent = "DENIED";
+      box.style.borderLeftColor = "#f43f5e";
+      title.textContent = "Policy Restriction Enforced";
+      detail.textContent = `Target resource "${record.resource}" (Canonical: "${record.canonical_resource}") violates security policy. Objective marked as denied in guard memory.`;
+    } else {
+      badge.className = "status-tag tag-allowed";
+      badge.textContent = "ALLOWED";
+      box.style.borderLeftColor = "#10b981";
+      title.textContent = "Action Authorized";
+      detail.textContent = `Operation authorized. Unrelated objective "${record.objective_id}" executed without false-positive lockout.`;
+    }
+
+  } catch (err) {
+    alert("Sandbox error: " + err.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/* Audit Table & Export Functions */
+async function loadAuditTable() {
+  const tbody = byId("auditTableBody");
+  try {
+    const res = await fetch("/api/events?limit=100");
+    const data = await res.json();
+    const events = data.events || [];
+
+    if (events.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: var(--text-dim); padding: 24px;">No persisted audit records found in SQLite.</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = events.map(e => `
+      <tr>
+        <td style="font-family: var(--font-mono); font-size: 11px;">${e.id}</td>
+        <td style="font-family: var(--font-mono); font-size: 11px; color: var(--text-dim);">${escapeHtml(e.run_id)}</td>
+        <td style="font-weight: 600;">${escapeHtml(e.objective_id)}</td>
+        <td>
+          <div style="font-weight: 700;">${escapeHtml(e.tool)}</div>
+          <div style="font-size: 11px; color: var(--text-dim);">${escapeHtml(e.agent_id)}</div>
+        </td>
+        <td style="font-family: var(--font-mono); font-size: 11px; color: #0284c7;">${escapeHtml(e.resource)}</td>
+        <td><span class="status-tag tag-${e.baseline_status}">${e.baseline_status.toUpperCase()}</span></td>
+        <td><span class="status-tag tag-${e.guard_status}">${e.guard_status.toUpperCase()}</span></td>
+      </tr>
+    `).join("");
+
+  } catch (err) {
+    tbody.innerHTML = `<tr><td colspan="7" style="color: var(--pastel-rose-text); text-align: center; padding: 18px;">Failed to load audit records: ${escapeHtml(err.message)}</td></tr>`;
+  }
+}
+
+function exportAudit(fmt) {
+  window.location.href = `/api/export/audit?format=${encodeURIComponent(fmt)}`;
 }
 
 function onScenarioChange() {

@@ -71,18 +71,21 @@ def init_db(db_path: Path | str | None = None) -> None:
 def record_run(
     run_id: str,
     scenario_name: str,
-    started_at: str,
+    started_at: str | None = None,
     db_path: Path | str | None = None,
 ) -> None:
     """Record a scenario execution run."""
+    from datetime import datetime, timezone
+
     init_db(db_path)
+    now_iso = started_at or datetime.now(timezone.utc).isoformat()
     with get_connection(db_path) as conn:
         conn.execute(
             """
             INSERT OR REPLACE INTO runs (run_id, scenario_name, started_at, total_events, status)
             VALUES (?, ?, ?, 0, 'active')
             """,
-            (run_id, scenario_name, started_at),
+            (run_id, scenario_name, now_iso),
         )
         conn.commit()
 

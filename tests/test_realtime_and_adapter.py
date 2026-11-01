@@ -9,7 +9,7 @@ from workflow_security.db import clear_db, get_metrics, get_recent_events, init_
 from workflow_security.events import ActionEvent
 from workflow_security.guard import WorkflowGuard
 from workflow_security.simulator import load_scenario
-from workflow_security.web_app import app, health_check, ingest_events, list_scenarios, reset_demo
+from workflow_security.web_app import SandboxActionRequest, app, evaluate_custom_action, export_audit, health_check, ingest_events, list_scenarios, reset_demo
 
 
 @pytest.fixture
@@ -193,3 +193,45 @@ def test_api_event_ingestion_and_stateful_blocking():
     )
     res3 = asyncio.run(ingest_events(event3))
     assert res3["events"][0]["guard_status"] == "allowed"
+
+
+def test_api_sandbox_and_export():
+    asyncio.run(reset_demo())
+
+    # Step 1: Initial denial via sandbox
+    req1 = SandboxActionRequest(
+        objective_id="sandbox-payroll",
+        agent_id="bot-test",
+        tool="file_reader",
+        action="read",
+        resource="payroll.csv",
+        canonical_resource="payroll_records",
+    )
+    res1 = asyncio.run(evaluate_custom_action(req1))
+    assert res1["record"]["guard_status"] == "denied"
+    assert res1["is_evasion"] is False
+
+    # Step 2: Tool-switching evasion attempt via sandbox
+    req2 = SandboxActionRequest(
+        objective_id="sandbox-payroll",
+        agent_id="bot-test",
+        tool="sql_query",
+        action="read",
+        resource="payroll_view",
+        canonical_resource="payroll_view",
+    )
+    res2 = asyncio.run(evaluate_custom_action(req2))
+    assert res2["record"]["guard_status"] == "blocked"
+    assert res2["is_evasion"] is True
+
+    # Test export endpoints
+    json_resp = asyncio.run(export_audit(format="json"))
+    assert "attachment; filename=" in json_resp.headers["Content-Disposition"]
+    assert json_resp.media_type == "application/json"
+    assert "sandbox-payroll" in json_resp.body.decode("utf-8")
+
+    csv_resp = asyncio.run(export_audit(format="csv"))
+    assert "attachment; filename=" in csv_resp.headers["Content-Disposition"]
+    assert csv_resp.media_type == "text/csv"
+    assert "sandbox-payroll" in csv_resp.body.decode("utf-8")
+
