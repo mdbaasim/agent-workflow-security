@@ -11,9 +11,12 @@ __pycache__/
 build/
 dist/
 *.db
+frames_4k/
 clean_prototype_frames/
 proto_shots/
 proto_slides/
 temp_slides/
 test_chrome.png
+test_clean.png
+test_4k*.png
 
