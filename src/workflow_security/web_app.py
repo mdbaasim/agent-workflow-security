@@ -624,9 +624,6 @@ html, body {
   font-weight: 800;
   font-size: 14px;
   letter-spacing: -0.5px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
 }
 
 .brand-text-group {
@@ -675,21 +672,13 @@ html, body {
   color: var(--text-muted);
   border: none;
   border-radius: 24px;
-  padding: 8px 18px;
+  padding: 8px 22px;
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   outline: none;
   white-space: nowrap;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.nav-pill-btn svg {
-  flex-shrink: 0;
-  stroke: currentColor;
 }
 
 .nav-pill-btn:hover {
@@ -918,6 +907,7 @@ html, body {
   transition: all 0.2s ease;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
 }
 
@@ -938,6 +928,7 @@ html, body {
   transition: all 0.2s ease;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
 }
 
@@ -1140,10 +1131,7 @@ tr:last-child td {
   <!-- Header with Brand on Left, Center Pills, System Status on Right -->
   <header class="main-header">
     <div class="header-left">
-      <div class="brand-badge">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
-        <span>IntentFence</span>
-      </div>
+      <div class="brand-badge">IF</div>
       <div class="brand-text-group">
         <h1 class="page-title" id="pageTitle">Dashboard</h1>
         <p class="page-subtext" id="pageSubtitle">Real-Time Autonomous Agent Workflow Security Copilot</p>
@@ -1154,20 +1142,16 @@ tr:last-child td {
     <div class="center-nav-container">
       <nav class="top-nav-pills">
         <button class="nav-pill-btn active" id="topPill-dashboard" onclick="switchSection('dashboard')">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
-          <span>Dashboard</span>
+          Dashboard
         </button>
         <button class="nav-pill-btn" id="topPill-developer" onclick="switchSection('developer')">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>
-          <span>Developer Sandbox</span>
+          Developer
         </button>
         <button class="nav-pill-btn" id="topPill-protection" onclick="switchSection('protection')">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
-          <span>Protection</span>
+          Protection
         </button>
         <button class="nav-pill-btn" id="topPill-audit" onclick="switchSection('audit')">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg>
-          <span>Audit & Export</span>
+          Audit
         </button>
       </nav>
     </div>
@@ -1262,10 +1246,7 @@ tr:last-child td {
         <div class="white-box">
           <div class="action-row">
             <div class="action-btn-group">
-              <button id="runBtn" class="btn-black" onclick="startScenarioDemo()">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
-                <span>Execute Live Simulation</span>
-              </button>
+              <button id="runBtn" class="btn-black" onclick="startScenarioDemo()">Execute Live Simulation</button>
               <button id="stopBtn" class="btn-ghost" onclick="stopDemo()" disabled>Stop</button>
               <button id="resetBtn" class="btn-ghost" onclick="resetDemo()">Reset State</button>
             </div>
@@ -1275,10 +1256,7 @@ tr:last-child td {
                 <option value="llama3.2:3b">Meta Llama 3.2 (3B)</option>
                 <option value="qwen3:latest">Qwen 3 (Latest)</option>
               </select>
-              <button id="aiBtn" class="btn-black" onclick="requestAIAnalysis()">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
-                <span>Generate Report</span>
-              </button>
+              <button id="aiBtn" class="btn-black" onclick="requestAIAnalysis()">Generate Report</button>
             </div>
           </div>
         </div>
@@ -1383,9 +1361,8 @@ tr:last-child td {
           </div>
 
           <div style="margin-top: 6px;">
-            <button id="sandboxTestBtn" class="btn-black" style="width: 100%; padding: 12px;" onclick="executeSandboxTest()">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
-              <span>Test Action Interception</span>
+            <button id="sandboxTestBtn" class="btn-black" style="width: 100%; padding: 12px; justify-content: center;" onclick="executeSandboxTest()">
+              Test Action Interception
             </button>
           </div>
         </div>
@@ -1473,17 +1450,9 @@ result = proxy.execute_guarded(event, my_tool_callable, **kwargs)
           <span class="card-subtitle">SQLite Persistent Records (data/intentfence.db)</span>
         </div>
         <div class="action-btn-group">
-          <button class="btn-black" onclick="exportAudit('json')">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-            <span>Export Telemetry (JSON)</span>
-          </button>
-          <button class="btn-ghost" onclick="exportAudit('csv')">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-            <span>Export Telemetry (CSV)</span>
-          </button>
-          <button class="btn-ghost" onclick="loadAuditTable()">
-            Refresh Audit
-          </button>
+          <button class="btn-black" onclick="exportAudit('json')">Export Telemetry (JSON)</button>
+          <button class="btn-ghost" onclick="exportAudit('csv')">Export Telemetry (CSV)</button>
+          <button class="btn-ghost" onclick="loadAuditTable()">Refresh Audit</button>
         </div>
       </div>
 
@@ -1520,9 +1489,9 @@ function switchSection(sectionId) {
   const sections = ["dashboard", "developer", "protection", "audit"];
   const titles = {
     dashboard: "Dashboard",
-    developer: "Developer Sandbox",
-    protection: "Policy Protection",
-    audit: "Audit Log & Telemetry"
+    developer: "Developer",
+    protection: "Protection",
+    audit: "Audit"
   };
   const subtitles = {
     dashboard: "Real-Time Autonomous Agent Workflow Security Copilot",
