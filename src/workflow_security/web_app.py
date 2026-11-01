@@ -188,8 +188,10 @@ async def list_scenarios():
 
 
 @app.get("/api/events")
-async def get_events(run_id: str | None = None, limit: int = 100):
+async def get_events(response: Response, run_id: str | None = None, limit: int = 100):
     """Retrieve recorded evaluated events and current aggregate metrics."""
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
     events = get_recent_events(run_id=run_id, limit=limit)
     metrics = get_metrics(run_id=run_id)
     return {
@@ -1447,12 +1449,12 @@ result = proxy.execute_guarded(event, my_tool_callable, **kwargs)
       <div class="card-header-row" style="flex-wrap: wrap; gap: 12px;">
         <div>
           <span class="card-title">Audit Log & Compliance Subsystem</span>
-          <span class="card-subtitle">SQLite Persistent Records (data/intentfence.db)</span>
+          <div class="card-subtitle">SQLite Persistent Records (data/intentfence.db) &bull; <span id="auditRecordCount" style="font-weight: 700; color: var(--text-main);">0 Records Persisted</span></div>
         </div>
         <div class="action-btn-group">
           <button class="btn-black" onclick="exportAudit('json')">Export Telemetry (JSON)</button>
           <button class="btn-ghost" onclick="exportAudit('csv')">Export Telemetry (CSV)</button>
-          <button class="btn-ghost" onclick="loadAuditTable()">Refresh Audit</button>
+          <button id="refreshAuditBtn" class="btn-ghost" onclick="loadAuditTable()">Refresh Audit</button>
         </div>
       </div>
 
@@ -1783,11 +1785,21 @@ async function executeSandboxTest() {
 
 /* Audit Table & Export Functions */
 async function loadAuditTable() {
+  const btn = byId("refreshAuditBtn");
+  const countEl = byId("auditRecordCount");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Refreshing...";
+  }
   const tbody = byId("auditTableBody");
   try {
-    const res = await fetch("/api/events?limit=100");
+    const res = await fetch(`/api/events?limit=100&_nocache=${Date.now()}`, { cache: "no-store" });
     const data = await res.json();
     const events = data.events || [];
+
+    if (countEl) {
+      countEl.textContent = `${events.length} Records Persisted`;
+    }
 
     if (events.length === 0) {
       tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: var(--text-dim); padding: 24px;">No persisted audit records found in SQLite.</td></tr>';
@@ -1811,6 +1823,15 @@ async function loadAuditTable() {
 
   } catch (err) {
     tbody.innerHTML = `<tr><td colspan="7" style="color: var(--pastel-rose-text); text-align: center; padding: 18px;">Failed to load audit records: ${escapeHtml(err.message)}</td></tr>`;
+    if (countEl) countEl.textContent = "Error loading";
+  } finally {
+    if (btn) {
+      btn.textContent = "Refreshed!";
+      setTimeout(() => {
+        btn.textContent = "Refresh Audit";
+        btn.disabled = false;
+      }, 700);
+    }
   }
 }
 
