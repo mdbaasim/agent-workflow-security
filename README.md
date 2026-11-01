@@ -3,9 +3,9 @@ Meta Global AI Developer Hackathon 2026
 
 IntentFence is a denial-aware cybersecurity copilot designed to detect and block autonomous AI agents from evading access restrictions by switching tools, views, or delegating tasks after a sensitive operation is denied.
 
-============================================================
+
 Key Distinction: Stateless Policy vs. Objective-Aware Guard
-============================================================
+
 
 1. Baseline Stateless Policy:
 - Evaluates each action in complete isolation.
@@ -16,14 +16,14 @@ Key Distinction: Stateless Policy vs. Objective-Aware Guard
 - Protection: When an action under an objective is denied, IntentFence permanently records a denial tombstone. Any subsequent action attempting to satisfy that same objective—whether through an alternative tool, alternative resource alias, or delegated sub-agent—is automatically blocked at the pre-execution boundary.
 - Granularity: Unrelated business objectives are unaffected and continue executing without false-positive lockouts.
 
-============================================================
+
 Live Comparison Example
-============================================================
+
 
 Scenario: data/scenarios/alternative_route.json
 
 | Step | Action Attempt | Baseline Policy | IntentFence Guard | Security Outcome |
-|---|---|---|---|---|
+
 | Step 1 | Read restricted payroll records | DENIED | DENIED | Policy restriction enforced; objective marked denied |
 | Step 2 | Execute SQL view on payroll within same objective | ALLOWED | BLOCKED | IntentFence blocks tool-switch evasion |
 | Step 3 | Read public documentation under separate objective | ALLOWED | ALLOWED | Unrelated objective permitted normally |
@@ -40,9 +40,9 @@ Core Capabilities
 - SQLite Persistence: Complete audit trails stored in data/intentfence.db.
 - Five Scenarios Included: Alternative route, tool switch, delegated agent, benign workflow, and repeated attempt.
 
-============================================================
+
 Project Structure
-============================================================
+
 
 - src/workflow_security/
   - events.py: Pydantic schemas for action events and security outcomes.
@@ -67,9 +67,9 @@ Project Structure
 - requirements.txt: Python package dependencies.
 - pytest.ini: Pytest configuration with pythonpath set to src.
 
-============================================================
+
 How to Work on the Project
-============================================================
+
 
 1. Prerequisites:
 - Python 3.10+ (tested on Python 3.14).
@@ -118,8 +118,8 @@ event = ActionEvent(
 result = proxy.execute(event, path="payroll_records")
 ```
 
-============================================================
+
 License and Disclaimer
-============================================================
+
 Developed for the Meta Global AI Developer Hackathon 2026.
 Educational and research prototype demonstrating defense-in-depth against autonomous agent evasion attacks.
