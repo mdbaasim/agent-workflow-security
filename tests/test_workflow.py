@@ -296,7 +296,7 @@ def test_ai_analyzer_uses_mocked_ollama_response():
     request = mocked_urlopen.call_args.args[0]
     payload = json.loads(request.data.decode("utf-8"))
 
-    assert payload["model"] == "qwen3:latest"
+    assert payload["model"] == "llama3.2:3b"
     assert "baseline_decision" in payload["messages"][1]["content"]
 
 

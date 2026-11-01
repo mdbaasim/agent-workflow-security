@@ -8,8 +8,19 @@ from .events import ActionEvent
 
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
-DEFAULT_MODEL = "qwen3:latest"
+DEFAULT_MODEL = "llama3.2:3b"
 REQUEST_TIMEOUT = 120
+
+
+def get_available_local_models() -> list[str]:
+    """Query local Ollama instance for installed models."""
+    try:
+        req = Request("http://localhost:11434/api/tags", method="GET")
+        with urlopen(req, timeout=3.0) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            return [m.get("name", "") for m in data.get("models", []) if m.get("name")]
+    except Exception:
+        return []
 
 
 def analyze_workflow(
